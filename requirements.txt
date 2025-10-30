@@ -1,0 +1,7 @@
+transformers
+google-generativeai
+datasets
+pandas
+torch
+torchvision
+torchaudio
