@@ -18,3 +18,336 @@ with open('/root/.kaggle/kaggle.json', 'w') as f:
 !ls -alh /root/.kaggle/kaggle.json
 
 !kaggle datasets list
+
+!kaggle datasets download -d valakhorasani/gym-members-exercise-dataset
+!unzip gym-members-exercise-dataset
+!kaggle datasets download -d trolukovich/nutritional-values-for-common-foods-and-products
+!unzip nutritional-values-for-common-foods-and-products
+
+from huggingface_hub import login
+
+# Log in to Hugging Face using your API key
+login(token="api-key")
+
+import pandas as pd
+
+# Load the nutritional values dataset
+nutrition_data = pd.read_csv("nutrition.csv")
+
+# Load the gym exercises dataset
+gym_exercises_data = pd.read_csv("gym_members_exercise_tracking.csv")
+
+# Check the first few rows of both datasets
+print(nutrition_data.head())
+print(gym_exercises_data.head())
+
+import pandas as pd
+from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments
+from datasets import Dataset
+
+# Nutrition dataset
+nutrition_data = pd.read_csv("nutrition.csv")
+nutrition_data = nutrition_data[["name", "calories"]]
+
+# Gym exercises dataset
+gym_exercises_data = pd.read_csv("gym_members_exercise_tracking.csv")
+gym_exercises_data = gym_exercises_data[["Workout_Type", "Calories_Burned"]]
+
+# Create input-output pairs
+def create_pairs(calorie_ranges):
+    data = []
+    for calories in calorie_ranges:
+        # Select foods within calorie range
+        recommended_foods = nutrition_data[nutrition_data["calories"] <= calories].head(5)["name"].tolist()
+        food_recommendations = ", ".join(recommended_foods)
+
+        # Select exercises that burn at least the given calories
+        recommended_exercises = gym_exercises_data[gym_exercises_data["Calories_Burned"] >= calories].head(5)["Workout_Type"].tolist()
+        exercise_recommendations = ", ".join(recommended_exercises)
+
+        # Input prompt and expected output
+        prompt = f"My daily calorie goal is {calories} calories. Suggest a diet and a workout plan."
+        response = (
+            f"Diet: {food_recommendations}. "
+            f"Workout: {exercise_recommendations}. "
+            f"Tip: Combine a balanced diet with consistent exercise for best results."
+        )
+        data.append({"input": prompt, "output": response})
+    return data
+
+
+
+# Define calorie ranges for the chatbot
+calorie_ranges = [1500, 1800, 2000, 2200, 2500]
+
+# Generate dataset
+chatbot_data = create_pairs(calorie_ranges)
+dataset = Dataset.from_pandas(pd.DataFrame(chatbot_data))
+
+import pandas as pd
+from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments
+from datasets import Dataset
+
+# Step 2: Load pretrained model and tokenizer
+model_name = "gpt2"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+# Add padding token to tokenizer
+tokenizer.pad_token = tokenizer.eos_token # using eos_token as pad_token
+
+model = AutoModelForCausalLM.from_pretrained(model_name)
+
+# Tokenize the dataset with padding and truncation
+def tokenize_data(example):
+    # using padding='max_length' and truncation=True to ensure consistent sequence lengths
+    return tokenizer(example["input"], text_target=example["output"], padding='max_length', truncation=True, max_length=50)
+    # Adjust max_length as needed based on the typical length of your input and output sequences
+
+tokenized_dataset = dataset.map(tokenize_data, batched=True)
+
+# Step 3: Fine-tune the model
+training_args = TrainingArguments(
+    output_dir="./trained_model",
+    eval_strategy="epoch",
+    learning_rate=5e-5,
+    per_device_train_batch_size=2,
+    per_device_eval_batch_size=2,
+    num_train_epochs=3,
+    save_strategy="epoch",
+    save_total_limit=2,
+    logging_dir="./logs",
+    logging_steps=10,
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_dataset,
+    eval_dataset=tokenized_dataset,
+)
+
+trainer.train()
+
+# Step 4: Save the trained model
+model.save_pretrained("./calorie_chatbot_model")
+tokenizer.save_pretrained("./calorie_chatbot_model")
+
+print("Model training complete and saved!")
+
+# Tokenize the dataset with padding and truncation
+def tokenize_data(example):
+    return tokenizer(
+        example["input"],
+        text_target=example["output"],
+        padding='max_length',
+        truncation=True,
+        max_length=100  # Adjust based on your input-output length
+    )
+
+tokenized_dataset = dataset.map(tokenize_data, batched=True)
+
+# Split dataset into training and evaluation sets
+train_size = int(0.8 * len(tokenized_dataset))
+eval_size = len(tokenized_dataset) - train_size
+train_dataset = tokenized_dataset.select(range(train_size))
+eval_dataset = tokenized_dataset.select(range(train_size, len(tokenized_dataset)))
+
+# Training arguments
+training_args = TrainingArguments(
+    output_dir="./fine_tuned_model",
+    eval_strategy="epoch",  # Evaluate at each epoch
+    learning_rate=3e-5,  # Adjust for better fine-tuning
+    per_device_train_batch_size=4,  # Increase if your hardware allows
+    per_device_eval_batch_size=4,
+    num_train_epochs=5,  # Increase epochs for more thorough fine-tuning
+    save_strategy="epoch",
+    save_total_limit=2,
+    logging_dir="./logs",
+    logging_steps=10,
+    report_to="none",  # Suppress reporting to external tools
+)
+
+# Define Trainer
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=eval_dataset,
+)
+
+# Train the model
+trainer.train()
+
+# Save the fine-tuned model
+model.save_pretrained("./fine_tuned_model")
+tokenizer.save_pretrained("./fine_tuned_model")
+
+print("Fine-tuning complete and saved!")
+
+
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import google.generativeai as ai
+import pandas as pd
+from datetime import datetime
+
+# Local fine-tuned model
+MODEL_PATH = "./fine_tuned_model"
+tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+model = AutoModelForCausalLM.from_pretrained(MODEL_PATH)
+
+# Gemini API configuration
+API_KEY = "api-key"  # Replace with your valid key
+ai.configure(api_key=API_KEY)
+gemini_model = ai.GenerativeModel("gemini-pro-latest")
+chat = gemini_model.start_chat()
+
+
+gender = None
+height = None
+weight = None
+age = None
+
+def validate_and_format_time(user_time):
+    """Validate and convert 24h time to 12h AM/PM format."""
+    try:
+        time_obj = datetime.strptime(user_time, "%H:%M")
+        return time_obj.strftime("%I:%M %p")
+    except ValueError:
+        return "enter proper timings"
+
+def calculate_calories_burned(weight, workout_hours, met_value=5):
+    """Estimate calories burned based on weight and workout hours."""
+    try:
+        return met_value * float(weight) * float(workout_hours)
+    except:
+        return 0
+
+def estimate_calories_consumed(breakfast_time, lunch_time, dinner_time, snack_time):
+    """Estimate calories consumed based on meal pattern."""
+    calories = 0
+    if breakfast_time.lower() != 'no': calories += 300
+    if lunch_time.lower() != 'no': calories += 600
+    if dinner_time.lower() != 'no': calories += 700
+    if snack_time.lower() != 'no': calories += 150
+    return calories
+
+# DATA COLLECTION
+def get_user_details():
+    """Ask user for personal information once."""
+    global gender, height, weight, age
+    print("👋 Hi! Let's personalize your fitness experience first.")
+    if gender is None:
+        gender = input("Chatbot: What is your gender? ")
+    if height is None:
+        height = input("Chatbot: What is your height (in cm)? ")
+    if weight is None:
+        weight = input("Chatbot: What is your weight (in kg)? ")
+    if age is None:
+        age = input("Chatbot: What is your age? ")
+
+def get_daily_routine():
+    """Collect user's daily routine for logging and calorie tracking."""
+    print("\nLet's record your daily routine.")
+
+    wake_up_time = validate_and_format_time(input("Wake-up time (24h HH:MM): "))
+    sleep_time = validate_and_format_time(input("Sleep time (24h HH:MM): "))
+
+    breakfast_time = input("Breakfast time (or 'no'): ")
+    breakfast_time = validate_and_format_time(breakfast_time) if breakfast_time.lower() != 'no' else 'no'
+
+    lunch_time = input("Lunch time (or 'no'): ")
+    lunch_time = validate_and_format_time(lunch_time) if lunch_time.lower() != 'no' else 'no'
+
+    dinner_time = input("Dinner time (or 'no'): ")
+    dinner_time = validate_and_format_time(dinner_time) if dinner_time.lower() != 'no' else 'no'
+
+    snack_time = input("Snack time (or 'no'): ")
+    snack_time = validate_and_format_time(snack_time) if snack_time.lower() != 'no' else 'no'
+
+    workout_hours = input("Workout hours today (or 'no'): ")
+    total_steps = input("Total steps taken today: ")
+
+    routine = {
+        "Wake Up Time": wake_up_time,
+        "Sleep Time": sleep_time,
+        "Breakfast Time": breakfast_time,
+        "Lunch Time": lunch_time,
+        "Dinner Time": dinner_time,
+        "Snack Time": snack_time,
+        "Workout Hours": workout_hours if workout_hours != '' else 'no',
+        "Total Steps": total_steps if total_steps != '' else 'no'
+    }
+    return routine
+
+# MODEL INTERACTIONS
+def query_gemini(prompt):
+    """Send prompt to Gemini and return response text."""
+    return chat.send_message(prompt).text
+
+def generate_diet_workout_response(calories):
+    """Use local fine-tuned model to suggest diet/workout plan."""
+    prompt = f"My daily calorie goal is {calories} calories. Suggest a diet and workout plan."
+    inputs = tokenizer(prompt, return_tensors="pt")
+    outputs = model.generate(**inputs, max_length=200, temperature=0.7, top_p=0.9)
+    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+# MAIN FITNESS CHATBOT
+
+def fitness_chatbot():
+    """Unified chatbot with calorie tracking, fitness tips, and Gemini chat."""
+    print("\n💪 Welcome to your AI Fitness Assistant!")
+    print("Type 'exit' anytime to quit.\n")
+
+    # Collect user info and daily routine first
+    get_user_details()
+    daily_routine = get_daily_routine()
+
+    # Add personal info
+    daily_routine["Gender"] = gender
+    daily_routine["Height (cm)"] = height
+    daily_routine["Weight (kg)"] = weight
+    daily_routine["Age"] = age
+
+    # Calculate calories
+    try:
+        workout_hours = float(daily_routine["Workout Hours"]) if daily_routine["Workout Hours"].lower() != 'no' else 0
+        calories_burned = calculate_calories_burned(weight, workout_hours)
+        daily_routine["Calories Burned"] = calories_burned
+    except:
+        daily_routine["Calories Burned"] = 0
+
+    calories_consumed = estimate_calories_consumed(
+        daily_routine["Breakfast Time"], daily_routine["Lunch Time"],
+        daily_routine["Dinner Time"], daily_routine["Snack Time"]
+    )
+    daily_routine["Calories Consumed"] = calories_consumed
+
+    # Save to CSV
+    file_name = "user_daily_routine.csv"
+    df = pd.DataFrame([daily_routine])
+    df.to_csv(file_name, mode='a', header=not os.path.exists(file_name), index=False)
+    print("\n📊 Daily routine saved successfully.\n")
+
+    # Start chat loop
+    while True:
+        user_input = input("You: ")
+
+        if user_input.lower() in ["exit", "bye"]:
+            print("Chatbot: Stay healthy and see you soon! 🏋️‍♂️")
+            break
+
+        elif "calorie goal" in user_input.lower():
+            try:
+                calories = int(user_input.split("is")[-1].strip().split()[0])
+                response = generate_diet_workout_response(calories)
+            except:
+                response = "Please specify your calorie goal clearly (e.g., 'My daily calorie goal is 2000 calories.')"
+
+        else:
+            response = query_gemini(user_input)
+
+        print("Chatbot:", response)
+
+
+if __name__ == "__main__":
+    fitness_chatbot()
+
